@@ -1,0 +1,99 @@
+name: "Node Package Release Action"
+description: "Automates the release process, including version bumping, building, and publishing your package."
+author: "vbilltran68"
+inputs:
+  trigger-ref:
+    description: "Branch or tag that triggered the workflow"
+    required: true
+  github-token:
+    description: "GitHub Token for authentication"
+    required: true
+  node-version:
+    description: "Node.js version to use"
+    default: "lts/*"
+outputs:
+  version:
+    description: "The version number of the release"
+    value: ${{ steps.bump_version.outputs.new_version }}
+runs:
+  using: "composite"
+  steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+      with:
+        fetch-depth: 0
+        ref: ${{ inputs.trigger-ref }}
+
+    - name: Setup pnpm
+      uses: pnpm/action-setup@v2
+      with:
+        version: 8
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: ${{ inputs.node-version }}
+        registry-url: "https://npm.pkg.github.com"
+        cache: "pnpm"
+
+    - name: Install dependencies
+      run: pnpm install --force
+      shell: bash
+
+    - name: Audit dependencies
+      run: pnpm audit
+      shell: bash
+
+    - name: Configure Git
+      run: |
+        git config --local user.email "github-actions[bot]@users.noreply.github.com"
+        git config --local user.name "github-actions[bot]"
+      shell: bash
+
+    - name: Clean Git working directory
+      run: |
+        git reset --hard
+        git clean -fd
+      shell: bash
+
+    - name: Bump Version (Increase batch only)
+      id: bump_version
+      run: |
+        CURRENT_VERSION=$(node -p "require('./package.json').version")
+        echo "Current version is $CURRENT_VERSION"
+
+        if git rev-parse "v$CURRENT_VERSION" >/dev/null 2>&1; then
+          pnpm version patch -m "[release] bump version to %s"
+          NEW_VERSION=$(node -p "require('./package.json').version")
+        else
+          NEW_VERSION=$CURRENT_VERSION
+          git tag $NEW_VERSION
+        fi
+
+        echo "Bump package version: v$NEW_VERSION"
+        echo "::set-output name=new_version::$NEW_VERSION"
+      shell: bash
+
+    - name: Build
+      env: # temporary workaround for "Error: error:0308010C:digital envelope routines::unsupported" in Node lts / 18
+        NODE_OPTIONS: --openssl-legacy-provider
+      run: pnpm build
+      shell: bash
+
+    - name: Commit Version
+      run: |
+        git push
+        git push --tags
+      env:
+        NODE_AUTH_TOKEN: ${{ inputs.github-token }}
+      shell: bash
+
+    - name: Publish
+      run: pnpm publish
+      env:
+        NODE_AUTH_TOKEN: ${{ inputs.github-token }}
+      shell: bash
+
+branding:
+  color: "yellow"
+  icon: "package"
