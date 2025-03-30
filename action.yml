@@ -1,0 +1,144 @@
+name: "Node Package Release Action"
+description: "Automates the release process, including version bumping, building, and publishing your package."
+author: "vbilltran68"
+inputs:
+  trigger-ref:
+    description: "Branch or tag that triggered the workflow"
+    required: true
+  github-token:
+    description: "GitHub Token for authentication"
+    required: true
+  node-version:
+    description: "Node.js version to use"
+    default: "lts/*"
+  package-manager:
+    description: 'Package manager to use (npm, yarn, or pnpm)'
+    default: 'npm'
+outputs:
+  version:
+    description: "The version number of the release"
+    value: ${{ steps.bump_version.outputs.new_version }}
+runs:
+  using: "composite"
+  steps:
+    - name: Verify Package Manager
+      run: |
+        if [[ "${{ inputs.package-manager }}" != "npm" && "${{ inputs.package-manager }}" != "yarn" && "${{ inputs.package-manager }}" != "pnpm" ]]; then
+          echo "Error: Invalid package manager. Please use npm, yarn, or pnpm."
+          exit 1
+        fi
+      shell: bash
+
+    - name: Verify Node.js version
+      run: |
+        # Extract major version number
+        node_version=${{ inputs.node-version }}
+        major_version=$(echo $node_version | cut -d'.' -f1)
+
+        # Check if it's "lts/*" or numeric version
+        if [ "$node_version" != "lts/*" ] && [ $major_version -lt 18 ]; then
+          echo "Error: Node.js version must be >= 18.0.0"
+          exit 1
+        fi
+      shell: bash
+
+    - name: Checkout code
+      uses: actions/checkout@v3
+      with:
+        fetch-depth: 0
+        ref: ${{ inputs.trigger-ref }}
+
+    - name: Setup pnpm
+      if: inputs.package-manager == 'pnpm'
+      uses: pnpm/action-setup@v2
+      with:
+          version: 8
+
+    - name: Setup Yarn
+      if: inputs.package-manager == 'yarn'
+      run: |
+        # Corepack is a tool included with Node.js that helps manage package manager versions
+        # It ensures consistent package manager versions across the project
+        # We enable it and prepare yarn to use the stable version
+        corepack enable
+        corepack prepare yarn@stable --activate
+      shell: bash
+
+    - name: Setup node
+      uses: actions/setup-node@v3
+      with:
+        node-version: ${{ inputs.node-version }}
+        registry-url: 'https://npm.pkg.github.com'
+        cache: ${{ inputs.package-manager }}
+
+    - name: Install dependencies
+      run: ${{ inputs.package-manager }} install
+      shell: bash
+
+    - name: Audit dependencies
+      run: |
+        if [ "${{ inputs.package-manager }}" = "npm" ]; then
+          npm audit signatures
+        else
+          ${{ inputs.package-manager }} audit
+        fi
+      shell: bash
+
+    - name: Configure Git
+      run: |
+        git config --local user.email "github-actions[bot]@users.noreply.github.com"
+        git config --local user.name "github-actions[bot]"
+      shell: bash
+
+    - name: Clean Git working directory
+      run: |
+        git reset --hard
+        git clean -fd
+      shell: bash
+
+    - name: Bump Version (Increase batch only)
+      id: bump_version
+      run: |
+        CURRENT_VERSION="v$(node -p "require('./package.json').version")"
+        echo "Current version is $CURRENT_VERSION"
+
+        if git rev-parse $CURRENT_VERSION >/dev/null 2>&1; then
+          ${{ inputs.package-manager }} version patch -m "[release] bump version to %s"
+          NEW_VERSION="v$(node -p "require('./package.json').version")"
+        else
+          NEW_VERSION=$CURRENT_VERSION
+          git tag $NEW_VERSION
+        fi
+
+        echo "Bump package version: $NEW_VERSION"
+        echo "::set-output name=new_version::$NEW_VERSION"
+      shell: bash
+
+    - name: Build
+      env: # temporary workaround for "Error: error:0308010C:digital envelope routines::unsupported" in Node lts / 18
+        NODE_OPTIONS: --openssl-legacy-provider
+      run: |
+        if [ "${{ inputs.package-manager }}" = "npm" ]; then
+          npm run build
+        else
+          ${{ inputs.package-manager }} build
+        fi
+      shell: bash
+
+    - name: Publish
+      run: ${{ inputs.package-manager }} publish
+      env:
+        NODE_AUTH_TOKEN: ${{ inputs.github-token }}
+      shell: bash
+
+    - name: Commit Version
+      run: |
+        git push
+        git push --tags
+      env:
+        NODE_AUTH_TOKEN: ${{ inputs.github-token }}
+      shell: bash
+
+branding:
+  color: "yellow"
+  icon: "package"
